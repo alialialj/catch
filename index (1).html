@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Click the Button (You Can’t)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div id="hud">
+    <span>Time <b id="time">0.0</b>s</span>
+    <span>Dodges <b id="dodges">0</b></span>
+    <span>Monsters <b id="monsters">0</b></span>
+  </div>
+
+  <div id="status"></div>
+
+  <section class="screen" id="startScreen">
+    <h1>Click<br>the button.</h1>
+    <p>That’s the whole game. One button, one click. The button has other plans, and it brought friends.</p>
+    <button class="big-btn" id="startBtn">Start the clock</button>
+  </section>
+
+  <section class="screen hidden" id="endScreen">
+    <p class="small">You finally clicked it in</p>
+    <div class="stat"><span id="finalTime">0.0</span>s</div>
+    <p class="verdict" id="verdict"></p>
+    <p class="small" id="summary"></p>
+    <button class="big-btn" id="againBtn">Try again</button>
+  </section>
+
+  <section class="screen lose hidden" id="loseScreen">
+    <h1 id="loseEmoji">💀</h1>
+    <p class="verdict" id="loseText"></p>
+    <p class="small" id="loseSummary"></p>
+    <button class="big-btn" id="retryBtn">Try again</button>
+  </section>
+
+  <button id="target" class="hidden">CLICK ME</button>
+  <div id="taunt"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const target = $('target'), taunt = $('taunt'), status = $('status');
+
+    // ---------- Copy ----------
+    const dodgeTaunts = [
+      "You're slower than my grandmother!",
+      "Is that your final speed?",
+      "Nope!",
+      "Too slow, slowpoke.",
+      "My grandmother clicks faster, and she's a toaster.",
+      "Were you aiming at me? Cute.",
+      "Almost! Not really.",
+      "Have you considered a different hobby?",
+      "Ha! Missed me.",
+      "Did your mouse fall asleep?",
+      "I've seen glaciers with better reflexes.",
+      "Try using both hands.",
+      "Bless your heart. Keep trying.",
+      "That was embarrassing. For you."
+    ];
+    const missTaunts = [
+      "You clicked the empty air. Bold strategy.",
+      "That's just the background. Wow.",
+      "Missed by a mile.",
+      "Even the wall is laughing."
+    ];
+    const monsterTaunts = [
+      "Meet my bodyguards!",
+      "Sic 'em, boys!",
+      "Surprise! Monsters!",
+      "Cursor, meet your roadblock."
+    ];
+    const decoyTaunts = [
+      "Ha! That one was a fake.",
+      "Fooled you. Again.",
+      "Real button? Never heard of her."
+    ];
+    const verdicts = [
+      [8,   "Suspiciously fast. Were you cheating?"],
+      [20,  "Respectable. My grandmother would still beat you."],
+      [40,  "Not great, not terrible. Mostly terrible."],
+      [75,  "Well, you got there eventually. Like a snail with a map."],
+      [Infinity, "I almost fell asleep. Congratulations on your persistence."]
+    ];
+    const monsterEmoji = ['👹', '👻', '🦇', '🕷️', '🧟', '👾', '🐙'🤢'];
+
+    // ---------- State ----------
+    const loseTaunts = [
+      "Chomp! My monsters say thanks.",
+      "You walked right into that one.",
+      "Eaten. Even my grandmother would have dodged that.",
+      "Splat. Better luck next time, snack."
+    ];
+    let playing = false, startTime = 0, dodges = 0;
+    let mouse = { x: innerWidth / 2, y: innerHeight / 2 };
+    let timerId, monsterId, hitId, lastTaunt = 0, lastDodge = 0, tauntTimer, vanishing = false;
+    let decoys = [], monsters = [];
+
+    const BOSS_AT = 50;   // dodges before the boss phase starts
+    const BOSS_HITS = 5;  // clicks needed to beat the boss
+    let boss = false, bossHits = 0, bossReady = false, bossRoamId, lastBossClick = 0;
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    const dist = (x1, y1, x2, y2) => Math.hypot(x1 - x2, y1 - y2);
+
+    function btnCenter() {
+      const r = target.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+
+    function say(text, x, y, force) {
+      const now = Date.now();
+      if (!force && now - lastTaunt < 900) return;
+      lastTaunt = now;
+      taunt.textContent = text;
+      const w = Math.min(260, innerWidth - 20);
+      taunt.style.left = Math.max(w / 2 + 10, Math.min(innerWidth - w / 2 - 10, x)) + 'px';
+      taunt.style.top = Math.max(50, Math.min(innerHeight - 90, y)) + 'px';
+      taunt.classList.add('show');
+      clearTimeout(tauntTimer);
+      tauntTimer = setTimeout(() => taunt.classList.remove('show'), 1800);
+    }
+
+    // ---------- Movement ----------
+    function randomSpot(awayFrom, minDist) {
+      const mx = 90, my = 80;
+      for (let i = 0; i < 40; i++) {
+        const x = rand(mx, innerWidth - mx), y = rand(my + 20, innerHeight - my);
+        if (dist(x, y, awayFrom.x, awayFrom.y) >= minDist) return { x, y };
+      }
+      return { x: rand(mx, innerWidth - mx), y: rand(my + 20, innerHeight - my) };
+    }
+
+    function moveTo(x, y) {
+      target.style.left = x + 'px';
+      target.style.top = y + 'px';
+    }
+
+    function dodge() {
+      const now = Date.now();
+      if (now - lastDodge < 120) return;
+      lastDodge = now;
+      dodges++;
+      $('dodges').textContent = dodges;
+
+      const c = btnCenter();
+      const spot = randomSpot(mouse, Math.min(260, innerWidth * 0.4));
+      moveTo(spot.x, spot.y);
+      say(pick(dodgeTaunts), c.x, c.y - 60);
+
+      // Escalation
+      if (dodges === 6) status.textContent = "The button is getting cocky…";
+      if (dodges >= 8 && Math.random() < 0.3) vanishFor(900);
+      if (dodges >= 12 && Math.random() < 0.35) spawnDecoy();
+      if (dodges >= 5 && Math.random() < 0.2) target.style.scale = String((0.55 + Math.random() * 0.65).toFixed(2));
+      if (dodges >= BOSS_AT) startBoss(false);
+    }
+
+    function vanishFor(ms) {
+      if (vanishing) return;
+      vanishing = true;
+      target.classList.add('vanish');
+      setTimeout(() => { target.classList.remove('vanish'); vanishing = false; }, ms);
+    }
+
+    // ---------- Boss phase ----------
+    const bossHurt = [
+      "Ow! That actually hurt.",
+      "Okay, okay, I'm slowing down…",
+      "Stop that!",
+      "Cheap shot!"
+    ];
+
+    // The button gets slower with every hit: longer glides, longer cooldowns
+    function setBossSpeed() {
+      const d = (0.2 + bossHits * 0.3).toFixed(2);
+      target.style.transition = `left ${d}s ease-in-out, top ${d}s ease-in-out, opacity .2s, scale .2s`;
+    }
+
+    function updateBossUI() {
+      target.textContent = `HIT ME ×${BOSS_HITS - bossHits}`;
+      status.textContent = `Boss phase: ${bossHits}/${BOSS_HITS} hits. It's slowing down…`;
+    }
+
+    function startBoss(lucky) {
+      if (boss || !playing) return;
+      boss = true; bossHits = 0; bossReady = false; vanishing = false;
+      clearMonsters(); clearDecoys();
+      target.classList.remove('vanish');
+      target.classList.add('boss');
+      target.style.scale = '1';
+      setBossSpeed();
+      moveTo(innerWidth / 2, innerHeight / 2);
+      target.textContent = `HIT ME ×${BOSS_HITS}`;
+      status.textContent = "BOSS PHASE! Hit the button 5 times. Get ready…";
+      say(lucky ? "A lucky click! Cute. Now the real fight." : "Fifty dodges! Meet the boss button.",
+          innerWidth / 2, innerHeight / 2 - 110, true);
+      // Two seconds of calm so you can react
+      setTimeout(() => {
+        if (!playing) return;
+        bossReady = true;
+        lastDodge = Date.now();
+        updateBossUI();
+        startBossRoam();
+      }, 2000);
+    }
+
+    // The boss wanders on its own, more lazily after each hit
+    function startBossRoam() {
+      clearTimeout(bossRoamId);
+      const loop = () => {
+        if (!playing || !boss) return;
+        const spot = randomSpot(mouse, 200);
+        moveTo(spot.x, spot.y);
+        bossRoamId = setTimeout(loop, 1400 + bossHits * 700);
+      };
+      bossRoamId = setTimeout(loop, 1400 + bossHits * 700);
+    }
+
+    function bossEvade() {
+      if (!bossReady) return;
+      const cooldown = 250 + bossHits * 350;
+      const now = Date.now();
+      if (now - lastDodge < cooldown) return;
+      lastDodge = now;
+      const spot = randomSpot(mouse, 220);
+      moveTo(spot.x, spot.y);
+    }
+
+    function bossHit() {
+      if (!bossReady) return;
+      const now = Date.now();
+      if (now - lastBossClick < 300) return;
+      lastBossClick = now;
+      bossHits++;
+      target.classList.remove('hit');
+      void target.offsetWidth;
+      target.classList.add('hit');
+      if (bossHits >= BOSS_HITS) { winGame(); return; }
+      setBossSpeed();
+      updateBossUI();
+      const c = btnCenter();
+      say(pick(bossHurt), c.x, c.y - 70, true);
+      lastDodge = now;
+      startBossRoam();
+    }
+
+    // Dodge when the cursor gets close
+    function onMove(e) {
+      mouse.x = e.clientX; mouse.y = e.clientY;
+      if (!playing || vanishing) return;
+      const c = btnCenter();
+      if (boss) {
+        const r = Math.max(35, 105 - bossHits * 18);
+        if (dist(mouse.x, mouse.y, c.x, c.y) < r) bossEvade();
+        return;
+      }
+      const radius = Math.min(120, 70 + dodges * 3);
+      if (dist(mouse.x, mouse.y, c.x, c.y) < radius) dodge();
+    }
+    document.addEventListener('pointermove', onMove);
+
+    // Touch screens: dodge on touch-down near the button
+    document.addEventListener('pointerdown', (e) => {
+      if (!playing || e.pointerType === 'mouse') return;
+      mouse.x = e.clientX; mouse.y = e.clientY;
+      const c = btnCenter();
+      if (dist(mouse.x, mouse.y, c.x, c.y) >= 110) return;
+      if (boss) { if (bossHits < 3 && Math.random() < 0.6) bossEvade(); }
+      else if (Math.random() < 0.85) dodge();
+    });
+
+    // ---------- Decoys & monsters ----------
+    function spawnDecoy() {
+      if (decoys.length >= 3) return;
+      const p = randomSpot(mouse, 150);
+      const d = document.createElement('button');
+      d.className = 'decoy';
+      d.textContent = 'CLICK ME';
+      d.style.left = p.x + 'px';
+      d.style.top = p.y + 'px';
+      d.addEventListener('click', (e) => {
+        e.stopPropagation();
+        say(pick(decoyTaunts), p.x, p.y - 60, true);
+        d.remove();
+        decoys = decoys.filter(x => x !== d);
+      });
+      document.body.appendChild(d);
+      decoys.push(d);
+    }
+    function clearDecoys() { decoys.forEach(d => d.remove()); decoys = []; }
+
+    const MONSTER_LIFETIME = 7000;  // ms before a monster wanders off
+    const MONSTER_ARM_DELAY = 700;  // ms of grace after spawning before it's deadly
+
+    function updateMonsterCount() { $('monsters').textContent = monsters.length; }
+
+    function spawnMonster() {
+      if (!playing || monsters.length >= 6) return;
+      const c = btnCenter();
+      const x = c.x + rand(-70, 70), y = c.y + rand(-70, 70);
+      // Never spawn on top of the cursor
+      if (dist(x, y, mouse.x, mouse.y) < 170) return;
+      const m = document.createElement('div');
+      m.className = 'monster';
+      m.textContent = pick(monsterEmoji);
+      m.style.left = x + 'px';
+      m.style.top = y + 'px';
+      m.born = Date.now();
+      document.body.appendChild(m);
+      monsters.push(m);
+      updateMonsterCount();
+      if (monsters.length === 1) say(pick(monsterTaunts) + " Don't touch them!", c.x, c.y - 70, true);
+      setTimeout(() => {
+        if (!monsters.includes(m)) return;
+        monsters = monsters.filter(k => k !== m);
+        updateMonsterCount();
+        m.classList.add('leaving');
+        setTimeout(() => m.remove(), 400);
+      }, MONSTER_LIFETIME);
+    }
+
+    // Monsters drift toward the gap between cursor and button to block the way
+    function patrolMonsters() {
+      if (!playing) return;
+      const c = btnCenter();
+      monsters.forEach((m) => {
+        const t = rand(0.35, 0.8);
+        const bx = mouse.x + (c.x - mouse.x) * t + rand(-60, 60);
+        const by = mouse.y + (c.y - mouse.y) * t + rand(-60, 60);
+        m.style.left = Math.max(30, Math.min(innerWidth - 30, bx)) + 'px';
+        m.style.top = Math.max(60, Math.min(innerHeight - 30, by)) + 'px';
+      });
+    }
+
+    // Touching a monster = game over
+    function checkHits() {
+      if (!playing) return;
+      const now = Date.now();
+      for (const m of monsters) {
+        if (now - m.born < MONSTER_ARM_DELAY) continue;
+        const r = m.getBoundingClientRect();
+        if (dist(mouse.x, mouse.y, r.left + r.width / 2, r.top + r.height / 2) < r.width * 0.42) {
+          loseGame(m);
+          return;
+        }
+      }
+    }
+
+    function clearMonsters() { monsters.forEach(m => m.remove()); monsters = []; updateMonsterCount(); }
+
+    // ---------- Game flow ----------
+    function startGame() {
+      playing = true; dodges = 0; vanishing = false;
+      clearInterval(timerId); clearInterval(monsterId); clearInterval(hitId);
+      clearMonsters(); clearDecoys();
+      $('dodges').textContent = 0; $('time').textContent = '0.0';
+      $('loseScreen').classList.add('hidden');
+      boss = false; bossHits = 0; bossReady = false;
+      clearTimeout(bossRoamId);
+      target.classList.remove('boss', 'hit', 'vanish');
+      target.style.transition = '';
+      target.textContent = 'CLICK ME';
+      target.style.scale = '1';
+      status.textContent = "Go on. Click it.";
+      moveTo(innerWidth / 2, innerHeight / 2);
+      $('startScreen').classList.add('hidden');
+      $('endScreen').classList.add('hidden');
+      target.classList.remove('hidden');
+      startTime = performance.now();
+      timerId = setInterval(() => {
+        $('time').textContent = ((performance.now() - startTime) / 1000).toFixed(1);
+      }, 100);
+      // Monsters join the fight after a few dodges
+      monsterId = setInterval(() => {
+        if (boss) { if (bossReady && bossHits < 3 && monsters.length < 3) spawnMonster(); }
+        else if (dodges >= 10) spawnMonster();
+        patrolMonsters();
+      }, 1300);
+      hitId = setInterval(checkHits, 40);
+    }
+
+    function loseGame(m) {
+      if (!playing) return;
+      playing = false;
+      const secs = (performance.now() - startTime) / 1000;
+      clearInterval(timerId); clearInterval(monsterId); clearInterval(hitId); clearTimeout(bossRoamId);
+      taunt.classList.remove('show');
+      target.classList.add('hidden');
+      status.textContent = '';
+      $('loseEmoji').textContent = m.textContent + ' 💥';
+      $('loseText').textContent = pick(loseTaunts);
+      $('loseSummary').textContent = `You survived ${secs.toFixed(1)}s and dodged the button ${dodges} times before a monster got you.`;
+      setTimeout(() => {
+        clearMonsters(); clearDecoys();
+        $('loseScreen').classList.remove('hidden');
+      }, 450);
+    }
+
+    function winGame() {
+      if (!playing) return;
+      playing = false;
+      const secs = (performance.now() - startTime) / 1000;
+      clearInterval(timerId); clearInterval(monsterId); clearInterval(hitId); clearTimeout(bossRoamId);
+      clearMonsters(); clearDecoys();
+      taunt.classList.remove('show');
+      target.classList.add('hidden');
+      status.textContent = '';
+      $('finalTime').textContent = secs.toFixed(1);
+      $('verdict').textContent = verdicts.find(v => secs < v[0])[1];
+      $('summary').textContent = `${dodges} dodges, ${BOSS_HITS} boss hits, and no monster ate you.`;
+      $('endScreen').classList.remove('hidden');
+    }
+
+    target.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!playing) return;
+      if (boss) bossHit();
+      else startBoss(true); // a lucky click skips straight to the boss
+    });
+
+    // Clicking empty space gets you mocked
+    document.addEventListener('click', (e) => {
+      if (!playing || e.target.closest('.screen')) return;
+      say(pick(missTaunts), e.clientX, e.clientY - 60);
+    });
+
+    $('startBtn').addEventListener('click', startGame);
+    $('againBtn').addEventListener('click', startGame);
+    $('retryBtn').addEventListener('click', startGame);
+
+    addEventListener('resize', () => { if (playing) moveTo(innerWidth / 2, innerHeight / 2); });
+  </script>
+</body>
+</html>
